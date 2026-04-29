@@ -45,7 +45,8 @@ import yaml
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DATASET_ROOT = Path(__file__).parent.parent
-DEFAULT_YAML = DATASET_ROOT / "rgn_graph_cleaning/longrange_cleaning.yaml"
+# DEFAULT_YAML = DATASET_ROOT / "rgn_graph_cleaning/longrange_cleaning.yaml"
+DEFAULT_YAML = "/home/rohang73/Documents/asl_rgb_stuff/rgn_graph_cleaning/longrange_cleaning.yaml"
 WINDOW       = "Dataset Tool"
 MAX_W, MAX_H = 1440, 900
 
@@ -267,17 +268,6 @@ class DatasetTool:
 
         g   = self._graph
         sel = self._selected_ids()
-
-        # Manually-removed nodes (gray)
-        for n in g.get("removed_nodes", []):
-            dp = to_disp(*n.get("pixel", (0, 0)), s)
-            cv2.circle(img, dp, 3, C_REMOVED, -1)
-            cv2.circle(img, dp, 4, (70, 70, 70), 1)
-
-        # Occlusion-cleaned nodes — small white dots, no border.
-        for n in g.get("occlusion_cleaned_nodes", []):
-            dp = to_disp(*n.get("pixel", (0, 0)), s)
-            cv2.circle(img, dp, 2, C_OCCLUDED, -1, cv2.LINE_AA)
 
         # Active nodes — drawn fully opaque with a black outer ring so the
         # green pops on any background.
