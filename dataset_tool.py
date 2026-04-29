@@ -2,41 +2,36 @@
 """
 Unified dataset tool: frame cleaning + node editing in one window.
 
-CLEAN mode  Label frames kept/rejected → saved to a YAML file.
-EDIT mode   Draw rectangles to remove nav-graph nodes → saved in graph JSON.
+No modes — every action is always available on every frame.
 
-Switch modes at any time with Tab. Navigation is shared between modes.
-
-Controls (both modes)
-─────────────────────
-  Tab              Toggle between CLEAN and EDIT mode
+Controls
+────────
+  Left-drag        Draw a selection rectangle (stack multiple)
+  r                Confirm: remove highlighted nodes + their edges
+  c                Clear pending rectangles (no JSON change)
+  u                Undo ALL node removals on this frame (restore JSON)
+  1                Keep frame (mark included, auto-advance)
+  2                Reject frame (mark excluded, auto-advance)
+  s                Skip (leave unlabeled, advance)
   n  / →           Next frame
   b  / ←           Previous frame
   j                Jump forward to next unlabeled frame
   t                Toggle overlay+nodes / raw-RGB background
   q  / ESC         Quit
 
-CLEAN mode
-──────────
-  1                Keep  (mark included, auto-advance)
-  2                Reject (mark excluded, auto-advance)
-  s                Skip  (leave unlabeled, advance)
-
-EDIT mode
-─────────
-  Left-click+drag  Draw a selection rectangle (stack multiple)
-  r                Confirm: remove highlighted nodes + their edges
-  c                Clear pending rectangles (no JSON change)
-  u                Undo ALL removals on this frame (restore JSON)
-
 Usage
 ─────
   python dataset_tool.py                        # all missions, resume
-  python dataset_tool.py --mode edit            # start in EDIT mode
+  python dataset_tool.py --mission-root DIR     # use any parent directory;
+                                                #   every subfolder containing
+                                                #   overlay_*.png is a mission
   python dataset_tool.py --missions 2024-10-01  # partial name match
   python dataset_tool.py --fresh                # wipe YAML, restart clean
   python dataset_tool.py --skip-labeled         # jump to first unlabeled
   python dataset_tool.py --yaml path/to/f.yaml  # custom YAML path
+  python dataset_tool.py --revert-all           # restore every graph JSON
+                                                #   (move removed_* back into
+                                                #    nodes/edges) and exit
 """
 
 import json
@@ -50,18 +45,16 @@ import yaml
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-DATASET_ROOT = Path(__file__).parent
-DEFAULT_YAML = DATASET_ROOT / "dataset_cleaning.yaml"
+DATASET_ROOT = Path(__file__).parent.parent
+DEFAULT_YAML = DATASET_ROOT / "rgn_graph_cleaning/longrange_cleaning.yaml"
 WINDOW       = "Dataset Tool"
 MAX_W, MAX_H = 1440, 900
-
-MODE_CLEAN = "CLEAN"
-MODE_EDIT  = "EDIT"
 
 # BGR colours
 C_ACTIVE   = ( 60, 220,  60)   # green  – normal node
 C_SELECTED = ( 40,  40, 230)   # red    – pending removal
-C_REMOVED  = (130, 130, 130)   # gray   – already removed
+C_REMOVED  = (130, 130, 130)   # gray   – removed manually (removed_nodes)
+C_OCCLUDED = (255, 255, 255)   # white  – removed by occlusion_clean.py
 C_RECT     = (230, 140,  20)   # amber  – selection rectangle
 
 
@@ -99,9 +92,12 @@ def save_json(path: Path, data: dict):
 
 # ── Dataset helpers ───────────────────────────────────────────────────────────
 
-def get_missions(root: Path, names: list | None) -> list[Path]:
-    all_m = sorted(d for d in root.iterdir()
-                   if d.is_dir() and d.name.startswith("trial_"))
+def get_missions(mission_root: Path, names: list | None) -> list[Path]:
+    # A "mission" is any subdirectory of `mission_root` that contains at least
+    # one overlay_*.png frame. This handles both trial_* and other layouts
+    # (e.g. longrange/highrange_*) without hardcoding a naming convention.
+    all_m = sorted(d for d in mission_root.iterdir()
+                   if d.is_dir() and any(d.glob("overlay_[0-9]*.png")))
     if not names:
         return all_m
     result, seen = [], set()
@@ -148,15 +144,14 @@ def pt_in_rects(x, y, rects) -> bool:
 
 class DatasetTool:
 
-    def __init__(self, all_frames, state, yaml_path, start_mode, skip_labeled):
+    def __init__(self, all_frames, state, yaml_path, skip_labeled):
         self.all_frames = all_frames
         self.total      = len(all_frames)
         self.state      = state
         self.yaml_path  = yaml_path
-        self.mode       = start_mode
         self.view       = "overlay"
 
-        # Edit-mode per-frame state
+        # Per-frame node-edit state
         self.rects:  list  = []
         self.drawing       = False
         self.pt0           = None
@@ -185,11 +180,9 @@ class DatasetTool:
                 return i
         return None
 
-    # ── Mouse callback (edit mode only) ───────────────────────────────────────
+    # ── Mouse callback ────────────────────────────────────────────────────────
 
     def mouse_cb(self, event, x, y, _flags, _p):
-        if self.mode != MODE_EDIT:
-            return
         if event == cv2.EVENT_LBUTTONDOWN:
             self.drawing = True
             self.pt0 = self.pt1 = (x, y)
@@ -277,11 +270,17 @@ class DatasetTool:
         g   = self._graph
         sel = self._selected_ids()
 
-        # Removed nodes (gray crosses)
+        # Manually-removed nodes (gray)
         for n in g.get("removed_nodes", []):
             dp = to_disp(*n.get("pixel", (0, 0)), s)
             cv2.circle(img, dp, 6, C_REMOVED, -1)
             cv2.circle(img, dp, 7, (70, 70, 70), 1)
+
+        # Occlusion-cleaned nodes (white) — produced by occlusion_clean.py
+        for n in g.get("occlusion_cleaned_nodes", []):
+            dp = to_disp(*n.get("pixel", (0, 0)), s)
+            cv2.circle(img, dp, 6, C_OCCLUDED, -1)
+            cv2.circle(img, dp, 7, (90, 90, 90), 1)
 
         # Active nodes
         for n in g.get("nodes", []):
@@ -318,19 +317,13 @@ class DatasetTool:
             cv2.rectangle(ov, (0, y0), (w, y1), (0, 0, 0), -1)
             cv2.addWeighted(ov, 0.55, img, 0.45, 0, img)
 
-        # ── mode badge (top-right) ──
-        mc = (50, 180, 50) if self.mode == MODE_CLEAN else (50, 130, 210)
-        cv2.rectangle(img, (w - 132, 6), (w - 6, 42), mc, -1)
-        cv2.putText(img, self.mode, (w - 124, 31), fn, 0.70,
-                    (0, 0, 0), 2, cv2.LINE_AA)
-
-        # ── clean status badge ──
+        # ── clean status badge (top-right) ──
         k = fkey(mn, fidx)
         if   k in self.state["included"]:  s_txt, s_col = "KEPT",     (55, 210, 55)
         elif k in self.state["excluded"]:  s_txt, s_col = "REJECTED", (55,  55, 210)
         else:                               s_txt, s_col = "UNLABELED",(160, 160, 55)
-        (tw, _), _ = cv2.getTextSize(s_txt, fn, 0.62, 2)
-        cv2.putText(img, s_txt, (w - tw - 148, 72), fn, 0.62, s_col, 2, cv2.LINE_AA)
+        (tw, _), _ = cv2.getTextSize(s_txt, fn, 0.70, 2)
+        cv2.putText(img, s_txt, (w - tw - 14, 32), fn, 0.70, s_col, 2, cv2.LINE_AA)
 
         # ── info lines ──
         cv2.putText(img, f"Mission: {mn}",
@@ -344,10 +337,11 @@ class DatasetTool:
                     (10, 52), fn, 0.49, (200, 200, 200), 1, cv2.LINE_AA)
 
         # ── node stats ──
-        na, nr, ns = (len(g.get("nodes", [])),
-                      len(g.get("removed_nodes", [])),
-                      len(sel))
-        stats = f"Nodes active: {na}   removed: {nr}"
+        na, nr, no, ns = (len(g.get("nodes", [])),
+                          len(g.get("removed_nodes", [])),
+                          len(g.get("occlusion_cleaned_nodes", [])),
+                          len(sel))
+        stats = f"Nodes active: {na}   removed: {nr}   occluded: {no}"
         if ns: stats += f"   pending removal: {ns}"
         cv2.putText(img, stats, (10, 80), fn, 0.49,
                     (60, 110, 230) if ns else (160, 215, 160), 1, cv2.LINE_AA)
@@ -358,13 +352,10 @@ class DatasetTool:
                     (130, 185, 255), 1, cv2.LINE_AA)
 
         # ── controls footer ──
-        if self.mode == MODE_CLEAN:
-            ctrl = ("1=keep  2=reject  s=skip  j=next-unlabeled  "
-                    "Tab=edit mode  t=toggle  n/b=nav  q=quit")
-        else:
-            ctrl = ("drag=select  r=remove  c=clear  u=undo all  "
-                    "Tab=clean mode  t=toggle  n/b=nav  q=quit")
-        cv2.putText(img, ctrl, (10, h - 13), fn, 0.44,
+        ctrl = ("drag=select  r=remove  c=clear  u=undo  "
+                "1=keep  2=reject  s=skip  j=next-unlabeled  "
+                "t=toggle  n/b=nav  q=quit")
+        cv2.putText(img, ctrl, (10, h - 13), fn, 0.42,
                     (165, 165, 165), 1, cv2.LINE_AA)
 
     # ── Main event loop ───────────────────────────────────────────────────────
@@ -383,12 +374,7 @@ class DatasetTool:
             cv2.imshow(WINDOW, self._render())
             key = cv2.waitKey(30) & 0xFF
 
-            # ── universal ──────────────────────────────────────────────────
-            if key == 9:                            # Tab – switch mode
-                self.mode = MODE_EDIT if self.mode == MODE_CLEAN else MODE_CLEAN
-                self.rects = []
-
-            elif key in (ord('n'), 83):             # n / right-arrow
+            if key in (ord('n'), 83):               # n / right-arrow
                 if self.idx < self.total - 1:
                     self.idx += 1
                     self.rects = []
@@ -414,24 +400,22 @@ class DatasetTool:
             elif key in (ord('q'), 27):             # quit
                 break
 
-            # ── CLEAN mode ─────────────────────────────────────────────────
-            elif key == ord('1') and self.mode == MODE_CLEAN:
+            elif key == ord('1'):                   # keep
                 self._label("included")
 
-            elif key == ord('2') and self.mode == MODE_CLEAN:
+            elif key == ord('2'):                   # reject
                 self._label("excluded")
 
-            elif key == ord('s') and self.mode == MODE_CLEAN:
+            elif key == ord('s'):                   # skip
                 self._advance()
 
-            # ── EDIT mode ──────────────────────────────────────────────────
-            elif key == ord('r') and self.mode == MODE_EDIT:
+            elif key == ord('r'):                   # confirm node removal
                 self.apply_removal()
 
-            elif key == ord('c') and self.mode == MODE_EDIT:
+            elif key == ord('c'):                   # clear pending rectangles
                 self.rects = []
 
-            elif key == ord('u') and self.mode == MODE_EDIT:
+            elif key == ord('u'):                   # undo all removals
                 self.undo_edit()
 
         cv2.destroyAllWindows()
@@ -464,6 +448,31 @@ class DatasetTool:
         self.pt0 = self.pt1 = None
 
 
+# ── Bulk revert ───────────────────────────────────────────────────────────────
+
+def revert_all(missions: list[Path]):
+    """Move removed_nodes/removed_edges back into nodes/edges for every
+    graph_*.json under the given missions. Idempotent; safe to re-run."""
+    print(f"\n  Reverting graph JSONs in {len(missions)} mission(s)…")
+    total_files = restored_files = restored_n = restored_e = 0
+    for mp in missions:
+        for gp in sorted(mp.glob("graph_[0-9]*.json")):
+            total_files += 1
+            g = load_json(gp)
+            rn = g.pop("removed_nodes", []) or []
+            re_ = g.pop("removed_edges", []) or []
+            if not rn and not re_:
+                continue
+            g.setdefault("nodes", []).extend(rn)
+            g.setdefault("edges", []).extend(re_)
+            save_json(gp, g)
+            restored_files += 1
+            restored_n     += len(rn)
+            restored_e     += len(re_)
+    print(f"  Scanned {total_files} files; restored {restored_files} "
+          f"({restored_n} nodes, {restored_e} edges).\n")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -472,17 +481,37 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    ap.add_argument("--mission-root", type=Path, default=DATASET_ROOT,
+                    metavar="DIR",
+                    help="Parent directory containing mission subfolders. "
+                         "Any subdirectory holding overlay_*.png is treated as "
+                         f"a mission. Default: {DATASET_ROOT}")
     ap.add_argument("--missions",     nargs="+", metavar="NAME",
-                    help="Mission folder names or partial matches. Default: all.")
-    ap.add_argument("--mode",         choices=["clean", "edit"], default="clean",
-                    help="Starting mode. Default: clean.")
+                    help="Mission folder names or partial matches under "
+                         "--mission-root. Default: all.")
     ap.add_argument("--fresh",        action="store_true",
                     help="Wipe existing YAML and restart cleaning from scratch.")
     ap.add_argument("--skip-labeled", action="store_true",
                     help="Auto-jump to the first unlabeled frame on startup.")
     ap.add_argument("--yaml",         type=Path, default=DEFAULT_YAML,
                     metavar="PATH",   help="YAML file path.")
+    ap.add_argument("--revert-all",   action="store_true",
+                    help="Restore every graph_*.json: move removed_nodes/edges "
+                         "back into nodes/edges, then exit. Honours --missions.")
     args = ap.parse_args()
+
+    if not args.mission_root.is_dir():
+        print(f"[error] --mission-root not a directory: {args.mission_root}")
+        sys.exit(1)
+
+    missions = get_missions(args.mission_root, args.missions)
+    if not missions:
+        print("[error] No missions found.")
+        sys.exit(1)
+
+    if args.revert_all:
+        revert_all(missions)
+        return
 
     if args.fresh:
         state = {"included": set(), "excluded": set()}
@@ -490,31 +519,24 @@ def main():
     else:
         state = load_yaml(args.yaml)
 
-    missions = get_missions(DATASET_ROOT, args.missions)
-    if not missions:
-        print("[error] No missions found.")
-        sys.exit(1)
-
     all_frames = [(mp, mp.name, f)
                   for mp in missions for f in get_frames(mp)]
 
     n_inc = sum(1 for _, mn, f in all_frames if fkey(mn, f) in state["included"])
     n_exc = sum(1 for _, mn, f in all_frames if fkey(mn, f) in state["excluded"])
 
-    print(f"\n  Root           : {DATASET_ROOT}")
+    print(f"\n  Mission root   : {args.mission_root}")
     print(f"  YAML           : {args.yaml}")
     print(f"  Missions       : {len(missions)}")
     print(f"  Frames total   : {len(all_frames)}")
     print(f"  Kept / Rejected: {n_inc} / {n_exc}  "
           f"(unlabeled: {len(all_frames) - n_inc - n_exc})")
-    print(f"  Starting mode  : {args.mode.upper()}")
-    print(f"\n  Tab=switch mode  n/b or arrows=nav  j=next-unlabeled  "
-          f"1/2/s=clean  drag/r/c/u=edit  t=toggle  q=quit\n")
+    print(f"\n  drag/r/c/u=edit nodes  1/2/s=label frame  "
+          f"n/b or arrows=nav  j=next-unlabeled  t=toggle  q=quit\n")
 
     tool = DatasetTool(
         all_frames, state, args.yaml,
-        start_mode    = MODE_CLEAN if args.mode == "clean" else MODE_EDIT,
-        skip_labeled  = args.skip_labeled,
+        skip_labeled = args.skip_labeled,
     )
     tool.run()
 
