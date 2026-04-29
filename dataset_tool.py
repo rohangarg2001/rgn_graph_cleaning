@@ -16,7 +16,6 @@ Controls
   n  / →           Next frame
   b  / ←           Previous frame
   j                Jump forward to next unlabeled frame
-  t                Toggle overlay+nodes / raw-RGB background
   q  / ESC         Quit
 
 Usage
@@ -51,7 +50,7 @@ WINDOW       = "Dataset Tool"
 MAX_W, MAX_H = 1440, 900
 
 # BGR colours
-C_ACTIVE   = ( 60, 220,  60)   # green  – normal node
+C_ACTIVE   = (  0, 255,   0)   # green  – normal node (max-saturation for visibility)
 C_SELECTED = ( 40,  40, 230)   # red    – pending removal
 C_REMOVED  = (130, 130, 130)   # gray   – removed manually (removed_nodes)
 C_OCCLUDED = (255, 255, 255)   # white  – removed by occlusion_clean.py
@@ -149,7 +148,6 @@ class DatasetTool:
         self.total      = len(all_frames)
         self.state      = state
         self.yaml_path  = yaml_path
-        self.view       = "overlay"
 
         # Per-frame node-edit state
         self.rects:  list  = []
@@ -273,23 +271,21 @@ class DatasetTool:
         # Manually-removed nodes (gray)
         for n in g.get("removed_nodes", []):
             dp = to_disp(*n.get("pixel", (0, 0)), s)
-            cv2.circle(img, dp, 6, C_REMOVED, -1)
-            cv2.circle(img, dp, 7, (70, 70, 70), 1)
+            cv2.circle(img, dp, 3, C_REMOVED, -1)
+            cv2.circle(img, dp, 4, (70, 70, 70), 1)
 
-        # Occlusion-cleaned nodes (white) — produced by occlusion_clean.py
+        # Occlusion-cleaned nodes — small white dots, no border.
         for n in g.get("occlusion_cleaned_nodes", []):
             dp = to_disp(*n.get("pixel", (0, 0)), s)
-            cv2.circle(img, dp, 6, C_OCCLUDED, -1)
-            cv2.circle(img, dp, 7, (90, 90, 90), 1)
+            cv2.circle(img, dp, 2, C_OCCLUDED, -1, cv2.LINE_AA)
 
-        # Active nodes
+        # Active nodes — drawn fully opaque with a black outer ring so the
+        # green pops on any background.
         for n in g.get("nodes", []):
             dp  = to_disp(*n.get("pixel", (0, 0)), s)
             col = C_SELECTED if n["id"] in sel else C_ACTIVE
-            cv2.circle(img, dp, 6, col, -1)
-            cv2.circle(img, dp, 7, (220, 220, 220), 1)
-            cv2.putText(img, str(n["id"]), (dp[0] + 8, dp[1] - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, col, 1, cv2.LINE_AA)
+            cv2.circle(img, dp, 4, (0, 0, 0), -1, cv2.LINE_AA)   # halo
+            cv2.circle(img, dp, 3, col,       -1, cv2.LINE_AA)
 
         # Confirmed rectangles (edit mode)
         for (x1, y1, x2, y2) in self.rects:
@@ -346,15 +342,10 @@ class DatasetTool:
         cv2.putText(img, stats, (10, 80), fn, 0.49,
                     (60, 110, 230) if ns else (160, 215, 160), 1, cv2.LINE_AA)
 
-        # ── view label ──
-        vt = "[overlay+nodes]" if self.view == "overlay" else "[raw RGB]"
-        cv2.putText(img, f"View: {vt}", (10, 107), fn, 0.43,
-                    (130, 185, 255), 1, cv2.LINE_AA)
-
         # ── controls footer ──
         ctrl = ("drag=select  r=remove  c=clear  u=undo  "
                 "1=keep  2=reject  s=skip  j=next-unlabeled  "
-                "t=toggle  n/b=nav  q=quit")
+                "n/b=nav  q=quit")
         cv2.putText(img, ctrl, (10, h - 13), fn, 0.42,
                     (165, 165, 165), 1, cv2.LINE_AA)
 
@@ -393,10 +384,6 @@ class DatasetTool:
                     self.rects = []
                     self._load()
 
-            elif key == ord('t'):                   # toggle view
-                self.view = "rgb" if self.view == "overlay" else "overlay"
-                self._load(keep_rects=True)
-
             elif key in (ord('q'), 27):             # quit
                 break
 
@@ -426,10 +413,9 @@ class DatasetTool:
 
     # ── Frame loader ──────────────────────────────────────────────────────────
 
-    def _load(self, keep_rects: bool = False):
+    def _load(self):
         mp, _mn, fidx = self.all_frames[self.idx]
-        prefix   = "overlay" if self.view == "overlay" else "rgb"
-        img_path = mp / f"{prefix}_{fidx}.png"
+        img_path = mp / f"rgb_{fidx}.png"
         gpath    = mp / f"graph_{fidx}.json"
 
         img = cv2.imread(str(img_path))
@@ -442,8 +428,7 @@ class DatasetTool:
         self._graph = load_json(gpath)
         self._gpath = gpath
 
-        if not keep_rects:
-            self.rects = []
+        self.rects = []
         self.drawing = False
         self.pt0 = self.pt1 = None
 
@@ -532,7 +517,7 @@ def main():
     print(f"  Kept / Rejected: {n_inc} / {n_exc}  "
           f"(unlabeled: {len(all_frames) - n_inc - n_exc})")
     print(f"\n  drag/r/c/u=edit nodes  1/2/s=label frame  "
-          f"n/b or arrows=nav  j=next-unlabeled  t=toggle  q=quit\n")
+          f"n/b or arrows=nav  j=next-unlabeled  q=quit\n")
 
     tool = DatasetTool(
         all_frames, state, args.yaml,
