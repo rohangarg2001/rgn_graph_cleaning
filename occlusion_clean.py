@@ -495,12 +495,14 @@ class DepthEstimator:
 def process_mission(mp: Path, est: DepthEstimator,
                     win: int, abs_tol: float, rel_tol: float,
                     agg: str, calibrate: str,
-                    vis_dir: Path | None = None):
+                    vis_dir: Path | None = None,
+                    save_overlay: bool = True,
+                    save_depth: bool = True):
     indices = get_frame_indices(mp)
     print(f"\n  [{mp.name}]  {len(indices)} frames")
 
     mission_vis_dir = None
-    if vis_dir is not None:
+    if vis_dir is not None and (save_overlay or save_depth):
         mission_vis_dir = vis_dir / mp.name
         clear_mission_vis(mission_vis_dir)
 
@@ -521,18 +523,19 @@ def process_mission(mp: Path, est: DepthEstimator,
 
         if mission_vis_dir is not None and rem_n:
             ok_overlay = ok_depth = False
-            if overlay_path.exists():
+            if save_overlay and overlay_path.exists():
                 ok_overlay = save_visualization(
                     overlay_path,
                     mission_vis_dir / f"overlay_{fidx}_occluded.png",
                     rem_n,
                 )
-            ok_depth = save_depth_visualization(
-                depth,
-                mission_vis_dir / f"depth_{fidx}_occluded.png",
-                node_preds, occluded_ids,
-                cal_params=cal_params,
-            )
+            if save_depth:
+                ok_depth = save_depth_visualization(
+                    depth,
+                    mission_vis_dir / f"depth_{fidx}_occluded.png",
+                    node_preds, occluded_ids,
+                    cal_params=cal_params,
+                )
             if ok_overlay or ok_depth:
                 vis_saved += 1
         if rn or re:
@@ -597,10 +600,17 @@ def main():
                     help="CUDA device id, -1 for CPU. Default: auto.")
     ap.add_argument("--vis-dir", type=Path, default=None, metavar="DIR",
                     help="If set, for every frame where occlusion removed any "
-                         "nodes, save the overlay image with those nodes "
-                         "marked in magenta to <vis-dir>/<mission_name>/. "
+                         "nodes, save vis files to <vis-dir>/<mission_name>/. "
                          "Stale files from prior runs of each mission are "
-                         "cleared first.")
+                         "cleared first. By default both overlay and depth "
+                         "vis are saved; use --no-overlay-vis / --no-depth-vis "
+                         "to skip either.")
+    ap.add_argument("--no-overlay-vis", action="store_true",
+                    help="Skip saving overlay_*_occluded.png (the original "
+                         "overlay with magenta X over removed nodes).")
+    ap.add_argument("--no-depth-vis", action="store_true",
+                    help="Skip saving depth_*_occluded.png (the colorized "
+                         "predicted depth map with all tested nodes drawn).")
     args = ap.parse_args()
 
     if not args.mission_root.is_dir():
@@ -641,7 +651,9 @@ def main():
     for mp in missions:
         n, e, _ = process_mission(mp, est, args.window, args.abs_tol,
                                   args.rel_tol, args.agg, args.calibrate,
-                                  vis_dir=args.vis_dir)
+                                  vis_dir=args.vis_dir,
+                                  save_overlay=not args.no_overlay_vis,
+                                  save_depth=not args.no_depth_vis)
         grand_n += n
         grand_e += e
 
