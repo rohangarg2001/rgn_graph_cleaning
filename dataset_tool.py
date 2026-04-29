@@ -45,8 +45,8 @@ import yaml
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DATASET_ROOT = Path(__file__).parent.parent
-# DEFAULT_YAML = DATASET_ROOT / "rgn_graph_cleaning/longrange_cleaning.yaml"
-DEFAULT_YAML = "/home/rohang73/Documents/asl_rgb_stuff/rgn_graph_cleaning/longrange_cleaning.yaml"
+DEFAULT_YAML = DATASET_ROOT / "rgn_graph_cleaning/longrange_cleaning.yaml"
+# DEFAULT_YAML = "/home/rohang73/Documents/asl_rgb_stuff/rgn_graph_cleaning/longrange_cleaning.yaml"
 WINDOW       = "Dataset Tool"
 MAX_W, MAX_H = 1440, 900
 
@@ -144,11 +144,13 @@ def pt_in_rects(x, y, rects) -> bool:
 
 class DatasetTool:
 
-    def __init__(self, all_frames, state, yaml_path, skip_labeled):
+    def __init__(self, all_frames, state, yaml_path, skip_labeled,
+                 no_confirm=False):
         self.all_frames = all_frames
         self.total      = len(all_frames)
         self.state      = state
         self.yaml_path  = yaml_path
+        self.no_confirm = no_confirm
 
         # Per-frame node-edit state
         self.rects:  list  = []
@@ -193,6 +195,8 @@ class DatasetTool:
             r = norm_rect(self.pt0, self.pt1)
             if (r[2] - r[0]) > 4 and (r[3] - r[1]) > 4:
                 self.rects.append(r)
+                if self.no_confirm:
+                    self.apply_removal()      # immediate, no `r` press needed
             self.pt0 = self.pt1 = None
 
     # ── Graph edit operations ─────────────────────────────────────────────────
@@ -473,6 +477,11 @@ def main():
     ap.add_argument("--revert-all",   action="store_true",
                     help="Restore every graph_*.json: move removed_nodes/edges "
                          "back into nodes/edges, then exit. Honours --missions.")
+    ap.add_argument("--no-confirm",   action="store_true",
+                    help="Apply node removal immediately on mouse-up. Each "
+                         "rectangle drag commits straight to the graph JSON "
+                         "with no `r` press. Use with care — `c` becomes "
+                         "useless and `u` is your only undo.")
     args = ap.parse_args()
 
     if not args.mission_root.is_dir():
@@ -512,6 +521,7 @@ def main():
     tool = DatasetTool(
         all_frames, state, args.yaml,
         skip_labeled = args.skip_labeled,
+        no_confirm   = args.no_confirm,
     )
     tool.run()
 
