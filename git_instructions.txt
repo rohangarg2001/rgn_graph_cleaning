@@ -1,0 +1,16 @@
+Since both your local edits and the upstream commit touch longrange_cleaning.yaml, you'll likely hit a conflict — but git lets you merge them. Safest approach:
+
+
+git stash push -m "local yaml edits" longrange_cleaning.yaml
+git pull --rebase
+git stash pop
+What happens:
+
+stash sets your local changes aside (working tree is now clean).
+pull --rebase fast-forwards in the upstream commit cleanly.
+stash pop reapplies your local edits on top.
+If the YAML edits don't overlap (different lines), step 3 just works. If they do overlap, stash pop will leave conflict markers (<<<<<<<, =======, >>>>>>>) in the file — open it, pick which lines to keep from each side (or merge both), then:
+
+
+git add longrange_cleaning.yaml
+git stash drop    # discard the now-applied stash
