@@ -45,8 +45,8 @@ import yaml
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DATASET_ROOT = Path(__file__).parent.parent
-DEFAULT_YAML = DATASET_ROOT / "rgn_graph_cleaning/longrange_cleaning.yaml"
-# DEFAULT_YAML = "/home/rohang73/Documents/asl_rgb_stuff/rgn_graph_cleaning/longrange_cleaning.yaml"
+# DEFAULT_YAML = DATASET_ROOT / "rgn_graph_cleaning/longrange_cleaning.yaml"
+DEFAULT_YAML = "/home/rohang73/Documents/asl_rgb_stuff/rgn_graph_cleaning/longrange_cleaning.yaml"
 WINDOW       = "Dataset Tool"
 MAX_W, MAX_H = 1440, 900
 
@@ -278,8 +278,8 @@ class DatasetTool:
         for n in g.get("nodes", []):
             dp  = to_disp(*n.get("pixel", (0, 0)), s)
             col = C_SELECTED if n["id"] in sel else C_ACTIVE
-            cv2.circle(img, dp, 4, (0, 0, 0), -1, cv2.LINE_AA)   # halo
-            cv2.circle(img, dp, 3, col,       -1, cv2.LINE_AA)
+            cv2.circle(img, dp, 3, (0, 0, 0), -1, cv2.LINE_AA)   # halo
+            cv2.circle(img, dp, 2, col,       -1, cv2.LINE_AA)
 
         # Confirmed rectangles (edit mode)
         for (x1, y1, x2, y2) in self.rects:
