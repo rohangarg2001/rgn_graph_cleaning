@@ -1,0 +1,14 @@
+# Depth Anything 3 itself is not on PyPI yet — install from git first:
+#   git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git
+#   cd Depth-Anything-3 && pip install -e .
+#
+# Then install the runtime deps used by the test scripts:
+torch>=2.0
+torchvision
+xformers
+numpy
+opencv-python
+pillow
+matplotlib
+huggingface_hub
+open3d            # only required by run_pointcloud.py
