@@ -39,6 +39,10 @@ Usage
   python occlusion_clean.py --mission-root DIR --agg min         # most aggressive
                                                                  #   removal
   python occlusion_clean.py --mission-root DIR --revert          # undo and exit
+  python occlusion_clean.py --mission-root DIR --output-dir OUT  # write modified
+                                                                 #   JSONs to OUT/
+                                                                 #   leaving originals
+                                                                 #   untouched
 """
 
 import argparse
@@ -89,9 +93,13 @@ def save_json(path: Path, data: dict):
 
 # ── Revert ────────────────────────────────────────────────────────────────────
 
-def revert_mission(mp: Path) -> tuple[int, int, int, int]:
+def revert_mission(mp: Path,
+                   output_root: Path | None = None) -> tuple[int, int, int, int]:
     n_files = n_restored = n_nodes = n_edges = 0
-    for gp in sorted(mp.glob("graph_[0-9]*.json")):
+    search_dir = output_root / mp.name if output_root is not None else mp
+    if not search_dir.exists():
+        return 0, 0, 0, 0
+    for gp in sorted(search_dir.glob("graph_[0-9]*.json")):
         n_files += 1
         g = load_json(gp)
         on = g.pop("occlusion_cleaned_nodes", []) or []
@@ -250,7 +258,8 @@ def _format_calibration(p: dict) -> str:
 
 def occlusion_clean_frame(graph_path: Path, depth: np.ndarray,
                           win: int, abs_tol: float, rel_tol: float,
-                          agg: str, calibrate: str
+                          agg: str, calibrate: str,
+                          out_path: Path | None = None,
                           ) -> tuple[list, list, list, set, dict]:
     """Returns (removed_nodes, removed_edges, node_preds, occluded_ids,
     cal_params).
@@ -258,8 +267,15 @@ def occlusion_clean_frame(graph_path: Path, depth: np.ndarray,
     node_preds is a list of (node_dict, pred_depth_or_None) for every node
     that was tested (in-frame, in-front-of-camera). pred values already
     have per-frame calibration applied (formula varies with --calibrate),
-    so the test reads `actual > pred + tol` directly."""
-    g = load_json(graph_path)
+    so the test reads `actual > pred + tol` directly.
+
+    If out_path is given the result is written there (leaving graph_path
+    untouched). For idempotent re-runs the existing out_path is loaded
+    first so stale occlusion_cleaned_* fields are properly restored."""
+    load_path = out_path if (out_path is not None and out_path.exists()) else graph_path
+    g = load_json(load_path)
+    if load_path is not graph_path and not g:
+        g = load_json(graph_path)
 
     # Idempotent re-run: restore any prior occlusion_cleaned_* back into
     # nodes/edges so this run starts from a clean slate. Manual removed_*
@@ -333,7 +349,10 @@ def occlusion_clean_frame(graph_path: Path, depth: np.ndarray,
     # Save if we changed anything — either by restoring previous state
     # or by flagging new occlusions (or both).
     if prev_n or prev_e or occluded_ids:
-        save_json(graph_path, g)
+        dest = out_path if out_path is not None else graph_path
+        if out_path is not None:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        save_json(dest, g)
 
     return rem_n, rem_e, node_preds, occluded_ids, cal_params
 
@@ -497,7 +516,8 @@ def process_mission(mp: Path, est: DepthEstimator,
                     agg: str, calibrate: str,
                     vis_dir: Path | None = None,
                     save_overlay: bool = True,
-                    save_depth: bool = True):
+                    save_depth: bool = True,
+                    output_root: Path | None = None):
     indices = get_frame_indices(mp)
     print(f"\n  [{mp.name}]  {len(indices)} frames")
 
@@ -515,8 +535,11 @@ def process_mission(mp: Path, est: DepthEstimator,
         if not rgb_path.exists() or not graph_path.exists():
             continue
         depth = est(rgb_path)
+        out_path = (output_root / mp.name / graph_path.name
+                    if output_root is not None else None)
         rem_n, rem_e, node_preds, occluded_ids, cal_params = occlusion_clean_frame(
-            graph_path, depth, win, abs_tol, rel_tol, agg, calibrate)
+            graph_path, depth, win, abs_tol, rel_tol, agg, calibrate,
+            out_path=out_path)
         rn, re = len(rem_n), len(rem_e)
         total_n += rn
         total_e += re
@@ -611,6 +634,11 @@ def main():
     ap.add_argument("--no-depth-vis", action="store_true",
                     help="Skip saving depth_*_occluded.png (the colorized "
                          "predicted depth map with all tested nodes drawn).")
+    ap.add_argument("--output-dir", type=Path, default=None, metavar="DIR",
+                    help="If set, write modified graph_*.json files under "
+                         "<output-dir>/<mission_name>/ instead of overwriting "
+                         "the originals. The source mission folders are never "
+                         "modified. Mirror structure matches the mission root.")
     args = ap.parse_args()
 
     if not args.mission_root.is_dir():
@@ -629,7 +657,7 @@ def main():
     if args.revert:
         gn = ge = gf = gr = 0
         for mp in missions:
-            f, r, n, e = revert_mission(mp)
+            f, r, n, e = revert_mission(mp, output_root=args.output_dir)
             gf += f; gr += r; gn += n; ge += e
             print(f"  [{mp.name}]  scanned {f}, restored {r} "
                   f"({n} nodes, {e} edges)")
@@ -645,6 +673,9 @@ def main():
     if args.vis_dir is not None:
         args.vis_dir.mkdir(parents=True, exist_ok=True)
         print(f"  Vis output   : {args.vis_dir}")
+    if args.output_dir is not None:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  JSON output  : {args.output_dir}")
     est = DepthEstimator(model_name, device_arg=args.device)
 
     grand_n = grand_e = 0
@@ -653,7 +684,8 @@ def main():
                                   args.rel_tol, args.agg, args.calibrate,
                                   vis_dir=args.vis_dir,
                                   save_overlay=not args.no_overlay_vis,
-                                  save_depth=not args.no_depth_vis)
+                                  save_depth=not args.no_depth_vis,
+                                  output_root=args.output_dir)
         grand_n += n
         grand_e += e
 
