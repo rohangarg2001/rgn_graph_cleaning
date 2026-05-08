@@ -1,0 +1,3 @@
+[submodule "nebula2-wildos"]
+	path = nebula2-wildos
+	url = https://github.com/rohangarg2001/nebula2-wildos
